@@ -1,0 +1,1906 @@
+name: Compilar APK de Jarvis
+
+# La app de Android completa viene al final de este archivo (en comentarios).
+# Cada vez que cambia este archivo, GitHub la compila y publica jarvis.apk en "Releases".
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/apk.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sacar el código de la app de este mismo archivo
+        run: |
+          python3 - <<'PY'
+          import os
+          src = open('.github/workflows/apk.yml', encoding='utf-8').read().split('\n')
+          i = src.index('#==== CODIGO ====')
+          files, cur = {}, None
+          for l in src[i + 1:]:
+              if l.startswith('#>>> '):
+                  cur = l[5:].strip(); files[cur] = []
+              elif cur and l.startswith('#'):
+                  files[cur].append(l[1:])
+          for path, body in files.items():
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              with open(path, 'w', encoding='utf-8') as f:
+                  f.write('\n'.join(body).rstrip('\n') + '\n')
+              print(path)
+          PY
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Llave de firma (se crea una sola vez y se guarda en el repo)
+        run: |
+          if [ ! -f jarvis.keystore ]; then
+            keytool -genkeypair -noprompt -keystore jarvis.keystore -storepass jarvis-apk -keypass jarvis-apk \
+              -alias jarvis -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Jarvis"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add jarvis.keystore
+            git commit -m "Llave de firma del APK"
+            git push
+          fi
+
+      - name: Compilar
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Publicar el APK para descargarlo en el teléfono
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk jarvis.apk
+          gh release delete apk --yes --cleanup-tag || true
+          gh release create apk jarvis.apk --title "Jarvis para Android" \
+            --notes "Versión ${{ github.run_number }}. Abre este enlace en tu teléfono, descarga jarvis.apk e instálalo." --latest
+
+#==== CODIGO ====
+#>>> android/settings.gradle.kts
+#pluginManagement {
+#    repositories {
+#        google()
+#        mavenCentral()
+#        gradlePluginPortal()
+#    }
+#}
+#dependencyResolutionManagement {
+#    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+#    repositories {
+#        google()
+#        mavenCentral()
+#    }
+#}
+#rootProject.name = "Jarvis"
+#include(":app")
+#>>> android/build.gradle.kts
+#plugins {
+#    id("com.android.application") version "8.7.3" apply false
+#    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+#}
+#>>> android/gradle.properties
+#org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+#android.useAndroidX=false
+#android.nonTransitiveRClass=true
+#kotlin.code.style=official
+#>>> android/app/build.gradle.kts
+#plugins {
+#    id("com.android.application")
+#    id("org.jetbrains.kotlin.android")
+#}
+#
+#val build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+#
+#android {
+#    namespace = "app.jarvis.asistente"
+#    compileSdk = 34
+#
+#    defaultConfig {
+#        applicationId = "app.jarvis.asistente"
+#        minSdk = 26
+#        targetSdk = 34
+#        versionCode = build
+#        versionName = "1.0.$build"
+#    }
+#
+#    signingConfigs {
+#        create("release") {
+#            storeFile = rootProject.file("../jarvis.keystore")
+#            storePassword = "jarvis-apk"
+#            keyAlias = "jarvis"
+#            keyPassword = "jarvis-apk"
+#        }
+#    }
+#
+#    buildTypes {
+#        release {
+#            isMinifyEnabled = false
+#            signingConfig = signingConfigs.getByName("release")
+#        }
+#    }
+#
+#    compileOptions {
+#        sourceCompatibility = JavaVersion.VERSION_17
+#        targetCompatibility = JavaVersion.VERSION_17
+#    }
+#    kotlinOptions {
+#        jvmTarget = "17"
+#    }
+#    lint {
+#        abortOnError = false
+#        checkReleaseBuilds = false
+#    }
+#}
+#>>> android/app/src/main/AndroidManifest.xml
+#<?xml version="1.0" encoding="utf-8"?>
+#<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+#
+#    <uses-permission android:name="android.permission.INTERNET" />
+#    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+#    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+#    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+#    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+#    <uses-permission android:name="android.permission.WAKE_LOCK" />
+#    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+#
+#    <queries>
+#        <intent>
+#            <action android:name="android.speech.RecognitionService" />
+#        </intent>
+#        <intent>
+#            <action android:name="android.intent.action.TTS_SERVICE" />
+#        </intent>
+#    </queries>
+#
+#    <application
+#        android:allowBackup="false"
+#        android:icon="@mipmap/ic_launcher"
+#        android:roundIcon="@mipmap/ic_launcher"
+#        android:label="Jarvis"
+#        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+#
+#        <activity
+#            android:name=".MainActivity"
+#            android:exported="true"
+#            android:launchMode="singleTask"
+#            android:windowSoftInputMode="adjustResize">
+#            <intent-filter>
+#                <action android:name="android.intent.action.MAIN" />
+#                <category android:name="android.intent.category.LAUNCHER" />
+#            </intent-filter>
+#        </activity>
+#
+#        <service
+#            android:name=".JarvisService"
+#            android:exported="false"
+#            android:foregroundServiceType="microphone" />
+#    </application>
+#</manifest>
+#>>> android/app/src/main/java/app/jarvis/asistente/Brain.kt
+#package app.jarvis.asistente
+#
+#import org.json.JSONArray
+#import org.json.JSONObject
+#import java.io.IOException
+#import java.net.HttpURLConnection
+#import java.net.URL
+#import java.text.DateFormat
+#import java.text.Normalizer
+#import java.util.Date
+#import java.util.Locale
+#
+#/** Lo que el cerebro necesita guardar o leer (en el teléfono lo implementa Store). */
+#interface Mem {
+#    val apiKey: String
+#    var modo: String
+#    val presupuesto: Float
+#    val gastoTotal: Double
+#    val perfil: String
+#    val busqueda: Boolean
+#    val ciudad: String
+#    fun datos(): JSONArray
+#    fun addDato(t: String)
+#    fun historyForApi(): JSONArray
+#    fun pushHistory(u: String, a: String)
+#    fun clearHistory()
+#    fun addGasto(modelo: String, usd: Double)
+#}
+#
+#class ApiError(val status: Int, val type: String?, msg: String?) : IOException(msg ?: type ?: "HTTP $status")
+#class Cancelled : IOException("cancelado")
+#
+#/** Token para cortar una respuesta a la mitad (tocar el botón, aplaudir de nuevo, etc.). */
+#class Cancel {
+#    @Volatile var cancelled = false; private set
+#    @Volatile var conn: HttpURLConnection? = null
+#    fun cancel() { cancelled = true; try { conn?.disconnect() } catch (e: Exception) {} }
+#}
+#
+#/** Divide el texto que va llegando en oraciones para empezar a hablar antes de que termine. */
+#class Chunker(private val emit: (String) -> Unit) {
+#    private val buf = StringBuilder()
+#    private var first = true
+#    private val re = Regex("[.!?…:;](?=\\s)|\\n")
+#    fun push(t: String) {
+#        buf.append(t)
+#        while (true) {
+#            val i = cut(); if (i <= 0) break
+#            val s = buf.substring(0, i); buf.delete(0, i)
+#            first = false; emit(s)
+#        }
+#    }
+#    private fun cut(): Int {
+#        val b = buf.toString(); val min = if (first) 2 else 24
+#        for (m in re.findAll(b)) { val end = m.range.last + 1; if (end >= min) return end }
+#        if (b.length > 210) { val c = b.lastIndexOf(", ", 190); if (c > 40) return c + 1 }
+#        return -1
+#    }
+#    fun flush() { val s = buf.toString(); buf.setLength(0); if (s.isNotBlank()) { first = false; emit(s) } }
+#}
+#
+#object Brain {
+#    class Model(val id: String, val name: String, val label: String,
+#                val inP: Double, val outP: Double, val cw: Double, val cr: Double, val max: Int)
+#
+#    /** Precios de lista en USD por millón de tokens (oct-2026). */
+#    val MODELS: Map<String, Model> = linkedMapOf(
+#        "haiku" to Model("claude-haiku-5-5", "Haiku 5.5", "Rápido", 0.10, 0.50, 0.125, 0.01, 700),
+#        "sonnet" to Model("claude-sonnet-5-5", "Sonnet 5.5", "Normal", 2.0, 10.0, 2.5, 0.10, 1024),
+#        "opus" to Model("claude-opus-5-5", "Opus 5.5", "Potente", 4.0, 20.0, 5.0, 0.20, 1500),
+#        "fable" to Model("claude-fable-5-1", "Fable 5.1", "Máximo", 10.0, 50.0, 12.5, 0.50, 1500)
+#    )
+#    private const val WEB_SEARCH_USD = 0.01
+#    @Volatile var baseUrl = "https://api.anthropic.com"
+#
+#    private val WAKE = "jarvis|yarvis|jarbis|yarbis|harvis|harbis|llarvis|charvis|jervis|garvis|jarviz|yarviz|jarvi|yarvi"
+#    private val STRIP_WAKE = Regex("^\\s*(oye\\s+|hey\\s+|ey\\s+|ok\\s+)?($WAKE)[\\s,.:;!¡¿?]*", RegexOption.IGNORE_CASE)
+#
+#    fun norm(s: String): String =
+#        Normalizer.normalize(s.lowercase(Locale.ROOT), Normalizer.Form.NFD)
+#            .replace(Regex("\\p{Mn}+"), "")
+#            .replace(Regex("[¿?¡!.,;:\"“”'()]"), " ")
+#            .replace(Regex("\\s+"), " ").trim()
+#
+#    fun stripWake(t: String): String = t.replace(STRIP_WAKE, "").trim()
+#
+#    private val R_OPUS_ASK = Regex("\\b(usa|con|en modo|modo) (el )?(opus|potente)\\b")
+#    private val R_DEEP = Regex("\\b(analiza\\w*|a fondo|piensa\\w* bien|razona\\w*|profund\\w*|detallad\\w*|paso a paso|estrategi\\w*|compara\\w*|investiga\\w*|evalua\\w*|planea\\w*|plan de|redacta\\w*|escribe\\w* (un|una)|program\\w*|codigo|calcula\\w*|resuelve\\w*|demuestra\\w*)\\b")
+#    private val R_MID = Regex("\\b(explica\\w*|por que|como funciona|que opinas|recomienda\\w*|ayudame|consejo\\w*|diferencia\\w*|cual es mejor|conviene)\\b")
+#
+#    /** Router: plática corta → Haiku, explicaciones → Sonnet, análisis → Opus. */
+#    fun route(text: String, modo: String): String {
+#        if (modo != "auto" && MODELS.containsKey(modo)) return modo
+#        val t = norm(text)
+#        if (R_OPUS_ASK.containsMatchIn(t) || R_DEEP.containsMatchIn(t)) return "opus"
+#        val words = t.split(' ').count { it.isNotBlank() }
+#        if (words > 25 || R_MID.containsMatchIn(t)) return "sonnet"
+#        return "haiku"
+#    }
+#
+#    class Local(val say: String, val end: Boolean = false)
+#
+#    /** Comandos que se resuelven en el teléfono, sin gastar API. */
+#    fun localCommand(text: String, store: Mem): Local? {
+#        val t = norm(stripWake(text))
+#        val m = Regex("^(?:modo|usa|cambia(?:te)? a|pasate a|activa(?: el)? modo)\\s+(?:el\\s+|modo\\s+)?(\\w+)$").find(t)
+#        if (m != null) {
+#            val k = mapOf("rapido" to "haiku", "haiku" to "haiku", "normal" to "sonnet", "sonnet" to "sonnet",
+#                "potente" to "opus", "opus" to "opus", "maximo" to "fable", "fable" to "fable",
+#                "automatico" to "auto", "auto" to "auto")[m.groupValues[1]]
+#            if (k != null) {
+#                store.modo = k
+#                return Local(if (k == "auto") "Listo, modo automático." else "Listo, modo ${MODELS[k]!!.label.lowercase()} con ${MODELS[k]!!.name}.")
+#            }
+#        }
+#        if (Regex("^(cuanto (llevo|he|e) gastado|cuanto llevo de gasto|cuanto gaste|cuanto me queda de (saldo|presupuesto))").containsMatchIn(t))
+#            return Local(spendSentence(store))
+#        if (Regex("^((olvida|borra) (la |esta )?conversacion|nueva conversacion|empecemos de nuevo)").containsMatchIn(t)) {
+#            store.clearHistory(); return Local("Listo, empezamos de cero.")
+#        }
+#        if (Regex("^(duermete|apagate|descansa|a dormir|eso es todo|es todo|adios|hasta luego|nada mas)\\b").containsMatchIn(t))
+#            return Local("Aquí estaré.", end = true)
+#        return null
+#    }
+#
+#    fun spendSentence(store: Mem): String {
+#        val t = store.gastoTotal
+#        val s = when {
+#            t < 0.01 -> "menos de un centavo de dólar"
+#            t < 1 -> "${Math.round(t * 100)} centavos de dólar"
+#            else -> String.format(Locale.US, "%.2f dólares", t)
+#        }
+#        return "Llevas $s de tu presupuesto de ${store.presupuesto.toInt()} dólares."
+#    }
+#
+#    fun buildSystem(store: Mem): JSONArray {
+#        val datos = store.datos()
+#        val lista = if (datos.length() == 0) "(ninguno todavía)" else
+#            (0 until datos.length()).joinToString("\n") { val d = datos.getJSONObject(it); "- ${d.optString("t")} (${d.optString("f")})" }
+#        val fixed = """Eres Jarvis, el asistente personal por voz de tu usuario. Vives en una app en su teléfono: él te habla y tu respuesta se lee en voz alta, muchas veces con la pantalla apagada.
+#
+#Cómo hablas:
+#- Español mexicano natural, cálido y con chispa, como un asistente de confianza. Nada acartonado.
+#- Breve por defecto: de una a tres oraciones. Si te pide explicar, analizar o detallar, extiéndete lo necesario, sin rollo.
+#- Escribe para el oído: sin markdown, sin viñetas, sin tablas, sin emojis, sin código y sin URLs. Si hay pasos, dilos con "primero", "luego" y "al final".
+#- Escribe cantidades de forma fácil de pronunciar, por ejemplo "quince pesos" o "tres punto cinco por ciento".
+#- Si no entendiste o es ambiguo, pregunta en una frase corta.
+#- Si te piden algo actual (noticias, precios, clima, resultados) y no tienes búsqueda web, dilo con honestidad en vez de inventar.
+#
+#Memoria: abajo está lo que sabes de tu usuario. Úsala cuando cambie o mejore la respuesta; no la recites ni la menciones porque sí.
+#Usa la herramienta guardar_memoria cuando te pida recordar algo o te cuente un dato duradero e importante (personas, proyectos, preferencias, fechas). No guardes cosas pasajeras. Después confirma en pocas palabras.
+#
+#=== PERFIL DEL USUARIO ===
+#${store.perfil.trim().ifEmpty { "(vacío)" }}
+#
+#=== DATOS QUE HAS APRENDIDO ===
+#$lista"""
+#        val now = DateFormat.getDateTimeInstance(DateFormat.FULL, DateFormat.SHORT, Locale("es", "MX")).format(Date())
+#        var dyn = "Fecha y hora actual en el teléfono: $now."
+#        if (store.busqueda) dyn += " Tienes búsqueda web: úsala para datos actuales y resume el resultado en voz, sin leer fuentes ni enlaces."
+#        if (store.ciudad.isNotBlank()) dyn += " El usuario está en ${store.ciudad}."
+#        return JSONArray()
+#            .put(JSONObject().put("type", "text").put("text", fixed).put("cache_control", JSONObject().put("type", "ephemeral")))
+#            .put(JSONObject().put("type", "text").put("text", dyn))
+#    }
+#
+#    fun buildTools(store: Mem): JSONArray {
+#        val tools = JSONArray().put(JSONObject()
+#            .put("name", "guardar_memoria")
+#            .put("description", "Guarda un dato duradero sobre el usuario para recordarlo en futuras conversaciones. Úsala cuando el usuario pida que recuerdes algo, o cuando comparta un dato estable e importante (personas, proyectos, preferencias, fechas). No la uses para cosas pasajeras.")
+#            .put("input_schema", JSONObject().put("type", "object")
+#                .put("properties", JSONObject().put("dato", JSONObject().put("type", "string")
+#                    .put("description", "El dato en una oración clara, por ejemplo \"Su color favorito es el azul\".")))
+#                .put("required", JSONArray().put("dato"))))
+#        if (store.busqueda) {
+#            val ws = JSONObject().put("type", "web_search_20250305").put("name", "web_search").put("max_uses", 3)
+#            if (store.ciudad.isNotBlank()) ws.put("user_location", JSONObject().put("type", "approximate")
+#                .put("city", store.ciudad).put("country", "MX").put("timezone", "America/Mexico_City"))
+#            tools.put(ws)
+#        }
+#        return tools
+#    }
+#
+#    private fun runTool(store: Mem, tu: JSONObject, onMemory: (String) -> Unit): JSONObject {
+#        val res = JSONObject().put("type", "tool_result").put("tool_use_id", tu.optString("id"))
+#        if (tu.optString("name") == "guardar_memoria") {
+#            val dato = tu.optJSONObject("input")?.optString("dato", "")?.trim()?.take(400) ?: ""
+#            if (dato.isNotEmpty()) { store.addDato(dato); onMemory(dato) }
+#            return res.put("content", if (dato.isNotEmpty()) "Guardado." else "No llegó ningún dato.")
+#        }
+#        return res.put("content", "Herramienta desconocida.").put("is_error", true)
+#    }
+#
+#    class Usage { var input = 0; var output = 0; var cacheW = 0; var cacheR = 0; var searches = 0 }
+#    class StreamResult(val content: List<JSONObject>, val stop: String?, val usage: Usage)
+#
+#    /** Llama a la API de Anthropic en streaming y va entregando el texto conforme llega. */
+#    fun stream(apiKey: String, body: JSONObject, cancel: Cancel, onText: (String) -> Unit): StreamResult {
+#        if (cancel.cancelled) throw Cancelled()
+#        val conn = URL("$baseUrl/v1/messages").openConnection() as HttpURLConnection
+#        cancel.conn = conn
+#        conn.requestMethod = "POST"; conn.doOutput = true
+#        conn.connectTimeout = 15000; conn.readTimeout = 90000
+#        conn.setRequestProperty("content-type", "application/json")
+#        conn.setRequestProperty("accept", "text/event-stream")
+#        conn.setRequestProperty("x-api-key", apiKey)
+#        conn.setRequestProperty("anthropic-version", "2023-06-01")
+#        try {
+#            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+#            val code = conn.responseCode
+#            if (code !in 200..299) {
+#                val txt = try { conn.errorStream?.bufferedReader()?.readText() ?: "" } catch (e: Exception) { "" }
+#                val err = try { JSONObject(txt).optJSONObject("error") } catch (e: Exception) { null }
+#                throw ApiError(code, err?.optString("type"), err?.optString("message"))
+#            }
+#            val blocks = HashMap<Int, JSONObject>()
+#            val json = HashMap<Int, StringBuilder>()
+#            val usage = Usage()
+#            var stop: String? = null
+#            fun take(u: JSONObject?) {
+#                if (u == null) return
+#                usage.input = maxOf(usage.input, u.optInt("input_tokens", 0))
+#                usage.output = maxOf(usage.output, u.optInt("output_tokens", 0))
+#                usage.cacheW = maxOf(usage.cacheW, u.optInt("cache_creation_input_tokens", 0))
+#                usage.cacheR = maxOf(usage.cacheR, u.optInt("cache_read_input_tokens", 0))
+#                u.optJSONObject("server_tool_use")?.let { usage.searches = it.optInt("web_search_requests", usage.searches) }
+#            }
+#            fun handle(data: String) {
+#                val ev = try { JSONObject(data) } catch (e: Exception) { return }
+#                when (ev.optString("type")) {
+#                    "message_start" -> take(ev.optJSONObject("message")?.optJSONObject("usage"))
+#                    "content_block_start" -> {
+#                        val i = ev.optInt("index"); val b = JSONObject(ev.optJSONObject("content_block")?.toString() ?: "{}")
+#                        if (b.optString("type") == "text") b.put("text", b.optString("text", ""))
+#                        if (b.optString("type") == "tool_use" || b.optString("type") == "server_tool_use") json[i] = StringBuilder()
+#                        blocks[i] = b
+#                    }
+#                    "content_block_delta" -> {
+#                        val i = ev.optInt("index"); val b = blocks[i] ?: return; val d = ev.optJSONObject("delta") ?: return
+#                        when (d.optString("type")) {
+#                            "text_delta" -> { val t = d.optString("text"); b.put("text", b.optString("text") + t); onText(t) }
+#                            "input_json_delta" -> json[i]?.append(d.optString("partial_json"))
+#                            "citations_delta" -> {
+#                                val arr = b.optJSONArray("citations") ?: JSONArray().also { b.put("citations", it) }
+#                                d.optJSONObject("citation")?.let { arr.put(it) }
+#                            }
+#                        }
+#                    }
+#                    "content_block_stop" -> {
+#                        val i = ev.optInt("index"); val sb = json.remove(i) ?: return
+#                        blocks[i]?.put("input", try { if (sb.isEmpty()) JSONObject() else JSONObject(sb.toString()) } catch (e: Exception) { JSONObject() })
+#                    }
+#                    "message_delta" -> { ev.optJSONObject("delta")?.optString("stop_reason")?.takeIf { it.isNotEmpty() && it != "null" }?.let { stop = it }; take(ev.optJSONObject("usage")) }
+#                    "error" -> { val e = ev.optJSONObject("error"); throw ApiError(0, e?.optString("type"), e?.optString("message")) }
+#                }
+#            }
+#            conn.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
+#                val data = StringBuilder()
+#                while (true) {
+#                    if (cancel.cancelled) throw Cancelled()
+#                    val line = r.readLine() ?: break
+#                    if (line.isEmpty()) { if (data.isNotEmpty()) { handle(data.toString()); data.setLength(0) }; continue }
+#                    if (line.startsWith("data:")) { if (data.isNotEmpty()) data.append('\n'); data.append(line.substring(5).trimStart()) }
+#                }
+#                if (data.isNotEmpty()) handle(data.toString())
+#            }
+#            return StreamResult(blocks.keys.sorted().mapNotNull { blocks[it] }, stop, usage)
+#        } catch (e: IOException) {
+#            if (cancel.cancelled) throw Cancelled()
+#            throw e
+#        } finally {
+#            cancel.conn = null
+#            try { conn.disconnect() } catch (e: Exception) {}
+#        }
+#    }
+#
+#    private fun cleanBlocks(blocks: List<JSONObject>): JSONArray {
+#        val a = JSONArray()
+#        for (b in blocks) {
+#            if (b.optString("type") == "text" && b.optString("text").isEmpty()) continue
+#            val c = JSONObject(b.toString())
+#            if (c.optString("type") == "text" && (c.optJSONArray("citations")?.length() ?: 0) == 0) c.remove("citations")
+#            a.put(c)
+#        }
+#        return a
+#    }
+#
+#    fun costOf(mk: String, u: Usage): Double {
+#        val p = MODELS[mk]!!
+#        return (u.input * p.inP + u.output * p.outP + u.cacheW * p.cw + u.cacheR * p.cr) / 1e6 + u.searches * WEB_SEARCH_USD
+#    }
+#
+#    private fun fallbackFor(e: ApiError, mk: String, tried: Set<String>, partial: Boolean): String? {
+#        if (partial) return null
+#        val retriable = e.status == 404 || e.type == "not_found_error" || (e.status == 400 && (e.message ?: "").contains("model", true)) ||
+#            e.status == 529 || e.type == "overloaded_error" || e.status >= 500
+#        if (!retriable) return null
+#        val chain = mapOf("fable" to listOf("opus", "sonnet", "haiku"), "opus" to listOf("sonnet", "haiku"),
+#            "sonnet" to listOf("haiku", "opus"), "haiku" to listOf("sonnet"))
+#        return chain[mk]?.firstOrNull { it !in tried }
+#    }
+#
+#    fun humanError(e: Exception): String {
+#        if (e !is ApiError) return "No tengo conexión o no pude llegar al servidor de Anthropic."
+#        val m = e.message ?: ""
+#        return when {
+#            e.status == 401 -> "Tu clave de API no es válida. Revísala en la app."
+#            m.contains("credit balance", true) || m.contains("billing", true) -> "Se acabó el saldo de tu cuenta de API. Recarga créditos en la consola."
+#            e.status == 403 -> "Tu clave no tiene permiso para eso."
+#            e.status == 429 -> "Estoy recibiendo demasiadas solicitudes. Espera tantito y vuelve a intentar."
+#            e.status == 529 || e.status >= 500 -> "Los servidores están saturados ahorita. Intenta en un momento."
+#            else -> "Algo falló: $m"
+#        }
+#    }
+#
+#    interface Sink {
+#        fun onFirstText()
+#        fun onSentence(s: String)
+#        fun onMemory(dato: String)
+#    }
+#    class Result(val ok: Boolean, val text: String, val cost: Double, val model: String, val error: String?, val status: Int)
+#
+#    /** Una vuelta completa: pregunta → respuesta (con herramientas y respaldo de modelos). */
+#    fun ask(store: Mem, text: String, startModel: String, cancel: Cancel, sink: Sink): Result {
+#        var mk = startModel
+#        val tried = HashSet<String>()
+#        val msgs = store.historyForApi().put(JSONObject().put("role", "user").put("content", text))
+#        val full = StringBuilder()
+#        var cost = 0.0
+#        var first = true
+#        val chunker = Chunker { sink.onSentence(it) }
+#        try {
+#            var step = 0
+#            while (step < 6) {
+#                step++
+#                val m = MODELS[mk]!!
+#                val body = JSONObject().put("model", m.id).put("max_tokens", m.max).put("stream", true)
+#                    .put("system", buildSystem(store)).put("tools", buildTools(store)).put("messages", msgs)
+#                val r = try {
+#                    stream(store.apiKey, body, cancel) { d ->
+#                        if (first) { first = false; sink.onFirstText() }
+#                        full.append(d); chunker.push(d)
+#                    }
+#                } catch (e: ApiError) {
+#                    tried.add(mk)
+#                    val fb = fallbackFor(e, mk, tried, full.isNotEmpty()) ?: throw e
+#                    mk = fb
+#                    continue
+#                }
+#                val c = costOf(mk, r.usage); cost += c; store.addGasto(mk, c)
+#                if (r.stop == "tool_use") {
+#                    chunker.flush()
+#                    if (full.isNotEmpty() && !full.last().isWhitespace()) full.append(' ')
+#                    msgs.put(JSONObject().put("role", "assistant").put("content", cleanBlocks(r.content)))
+#                    val results = JSONArray()
+#                    for (b in r.content) if (b.optString("type") == "tool_use") results.put(runTool(store, b) { sink.onMemory(it) })
+#                    msgs.put(JSONObject().put("role", "user").put("content", results))
+#                    continue
+#                }
+#                if (r.stop == "pause_turn") { msgs.put(JSONObject().put("role", "assistant").put("content", cleanBlocks(r.content))); continue }
+#                if (r.stop == "refusal" && full.isBlank() && mk == "haiku" && "sonnet" !in tried) { tried.add(mk); mk = "sonnet"; continue }
+#                break
+#            }
+#            chunker.flush()
+#            var out = full.toString().trim()
+#            if (out.isEmpty()) { out = "Mmm, no tengo una respuesta para eso."; sink.onSentence(out) }
+#            store.pushHistory(text, out)
+#            return Result(true, out, cost, mk, null, 0)
+#        } catch (e: Cancelled) {
+#            if (full.isNotBlank()) store.pushHistory(text, "$full ...")
+#            return Result(false, full.toString(), cost, mk, null, -1)
+#        } catch (e: IOException) {
+#            if (cancel.cancelled) return Result(false, full.toString(), cost, mk, null, -1)
+#            return Result(false, "", cost, mk, humanError(e), (e as? ApiError)?.status ?: 0)
+#        }
+#    }
+#
+#    /** Limpia lo que no se debe leer en voz alta. */
+#    fun cleanForSpeech(s: String): String = s
+#        .replace(Regex("```[\\s\\S]*?```"), " ")
+#        .replace(Regex("`([^`]*)`"), "$1")
+#        .replace(Regex("\\[([^\\]]+)\\]\\((https?:[^)]+)\\)"), "$1")
+#        .replace(Regex("https?://\\S+"), "el enlace")
+#        .replace(Regex("[*_#>~|]+"), " ")
+#        .replace(Regex("(?m)^\\s*[-•]\\s+"), "")
+#        .replace(Regex("[\\x{1F000}-\\x{1FAFF}\\x{2600}-\\x{27BF}\\x{FE0F}]"), "")
+#        .replace(Regex("\\s+"), " ").trim()
+#}
+#>>> android/app/src/main/java/app/jarvis/asistente/Bus.kt
+#package app.jarvis.asistente
+#
+#import java.text.SimpleDateFormat
+#import java.util.Date
+#import java.util.Locale
+#
+#/** Canal simple entre el servicio y la pantalla: estado actual y registro de lo que pasa. */
+#object Bus {
+#    private val lines = ArrayDeque<String>()
+#    private val fmt = SimpleDateFormat("HH:mm", Locale.ROOT)
+#    @Volatile var stateText: String = "Jarvis apagado"; private set
+#    @Volatile var listener: (() -> Unit)? = null
+#
+#    fun log(s: String) {
+#        synchronized(this) {
+#            lines.addLast("${fmt.format(Date())}  $s")
+#            while (lines.size > 80) lines.removeFirst()
+#        }
+#        listener?.invoke()
+#    }
+#
+#    fun state(s: String) { stateText = s; listener?.invoke() }
+#
+#    fun changed() { listener?.invoke() }
+#
+#    fun text(): String = synchronized(this) { lines.reversed().joinToString("\n") }
+#}
+#>>> android/app/src/main/java/app/jarvis/asistente/Clap.kt
+#package app.jarvis.asistente
+#
+#import android.annotation.SuppressLint
+#import android.media.AudioFormat
+#import android.media.AudioRecord
+#import android.media.MediaRecorder
+#import kotlin.math.abs
+#import kotlin.math.max
+#import kotlin.math.min
+#import kotlin.math.pow
+#import kotlin.math.sqrt
+#
+#/** Detector de aplausos: golpe agudo que se apaga rápido (la voz y la música se sostienen). */
+#class ClapDetector(var needed: Int = 2, sensitivity: Float = 0.5f) {
+#    enum class Kind { ONSET, CLAP, TRIGGER, REJECT }
+#    class Event(val kind: Kind, val peak: Float)
+#
+#    var sustainRatio = 0.22f
+#    var peakThr = 0.2f; private set
+#    var ratio = 6.5f; private set
+#    private var noise = 0.004f
+#    private var prevRms = 0f
+#    private var hasCand = false
+#    private var candT = 0.0
+#    private var candMaxRms = 0f
+#    private var candMaxPeak = 0f
+#    private var candSustain = 0
+#    private val claps = ArrayList<Double>()
+#    private var lastClapAt = -1e9
+#    private var coolUntil = -1e9
+#
+#    init { setSensitivity(sensitivity) }
+#
+#    /** s: 0 (poco sensible) .. 1 (muy sensible). */
+#    fun setSensitivity(s: Float) {
+#        val v = s.coerceIn(0f, 1f)
+#        peakThr = (0.5 * 0.16.pow(v.toDouble())).toFloat()
+#        ratio = 9f - 5f * v
+#    }
+#
+#    fun clearClaps() { claps.clear() }
+#
+#    /** peak y rms del bloque ya filtrado (0..1); t en milisegundos. */
+#    fun process(peak: Float, rms: Float, t: Double): Event? {
+#        var out: Event? = null
+#        if (hasCand) {
+#            val dt = t - candT
+#            if (dt < 45) { candMaxRms = max(candMaxRms, rms); candMaxPeak = max(candMaxPeak, peak) }
+#            else if (dt >= 70 && dt <= 150 && rms > candMaxRms * sustainRatio) candSustain++
+#            if (dt >= 150) {
+#                hasCand = false
+#                out = if (candSustain <= 1) registerClap(t) else Event(Kind.REJECT, candMaxPeak)
+#            }
+#        } else if (t >= coolUntil && t - lastClapAt > 160 && peak >= peakThr &&
+#            rms >= noise * ratio && rms > prevRms * 1.5f) {
+#            hasCand = true; candT = t; candMaxRms = rms; candMaxPeak = peak; candSustain = 0
+#            out = Event(Kind.ONSET, peak)
+#        } else {
+#            noise = if (rms < noise * 3) max(0.0015f, noise * 0.97f + rms * 0.03f)
+#                    else min(0.08f, noise * 0.999f + rms * 0.001f)
+#        }
+#        prevRms = rms
+#        return out
+#    }
+#
+#    private fun registerClap(t: Double): Event {
+#        lastClapAt = candT
+#        claps.removeAll { candT - it > 900 }
+#        claps.add(candT)
+#        if (claps.size >= needed) {
+#            claps.clear(); coolUntil = t + 1200
+#            return Event(Kind.TRIGGER, candMaxPeak)
+#        }
+#        return Event(Kind.CLAP, candMaxPeak)
+#    }
+#}
+#
+#/** Filtro pasa-altas (biquad) para quitar voz grave, golpes y ruido de fondo. */
+#class Biquad private constructor(
+#    private val b0: Double, private val b1: Double, private val b2: Double,
+#    private val a1: Double, private val a2: Double
+#) {
+#    private var x1 = 0.0; private var x2 = 0.0; private var y1 = 0.0; private var y2 = 0.0
+#    fun process(x: Double): Double {
+#        val y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+#        x2 = x1; x1 = x; y2 = y1; y1 = y
+#        return y
+#    }
+#    companion object {
+#        fun highpass(fc: Double, fs: Double, q: Double): Biquad {
+#            val w = 2 * Math.PI * fc / fs
+#            val alpha = Math.sin(w) / (2 * q)
+#            val cw = Math.cos(w)
+#            val a0 = 1 + alpha
+#            return Biquad((1 + cw) / 2 / a0, -(1 + cw) / a0, (1 + cw) / 2 / a0, -2 * cw / a0, (1 - alpha) / a0)
+#        }
+#    }
+#}
+#
+#/** Escucha el micrófono en un hilo propio y avisa cuando detecta aplausos. */
+#class ClapListener(needed: Int, sensitivity: Float, private val onEvent: (ClapDetector.Event) -> Unit) {
+#    private val detector = ClapDetector(needed, sensitivity)
+#    @Volatile private var running = false
+#    @Volatile private var pendingNeeded: Int? = null
+#    @Volatile private var pendingSens: Float? = null
+#    @Volatile var level = 0f; private set
+#    private var thread: Thread? = null
+#
+#    fun configure(needed: Int? = null, sensitivity: Float? = null) {
+#        if (needed != null) pendingNeeded = needed
+#        if (sensitivity != null) pendingSens = sensitivity
+#    }
+#
+#    @SuppressLint("MissingPermission")
+#    fun start(): Boolean {
+#        if (running) return true
+#        val sr = 16000
+#        val min = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+#        val rec = try {
+#            AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sr, AudioFormat.CHANNEL_IN_MONO,
+#                AudioFormat.ENCODING_PCM_16BIT, max(min, 8192))
+#        } catch (e: Exception) { return false }
+#        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return false }
+#        try { rec.startRecording() } catch (e: Exception) { rec.release(); return false }
+#        running = true
+#        thread = Thread({
+#            val block = 256                       // 16 ms a 16 kHz
+#            val buf = ShortArray(block)
+#            val hp = Biquad.highpass(1200.0, sr.toDouble(), 0.7)
+#            var n = 0L
+#            try {
+#                while (running) {
+#                    var read = 0
+#                    while (read < block && running) {
+#                        val r = rec.read(buf, read, block - read)
+#                        if (r < 0) { Thread.sleep(50); break }
+#                        read += r
+#                    }
+#                    if (read < block) continue
+#                    pendingNeeded?.let { detector.needed = it; detector.clearClaps(); pendingNeeded = null }
+#                    pendingSens?.let { detector.setSensitivity(it); pendingSens = null }
+#                    var pk = 0.0; var ss = 0.0
+#                    for (i in 0 until block) {
+#                        val y = hp.process(buf[i] / 32768.0)
+#                        val a = abs(y); if (a > pk) pk = a
+#                        ss += y * y
+#                    }
+#                    val rms = sqrt(ss / block)
+#                    level = min(1.0, rms * 14).toFloat()
+#                    val ev = detector.process(pk.toFloat(), rms.toFloat(), n * 16.0)
+#                    n++
+#                    if (ev != null && ev.kind != ClapDetector.Kind.ONSET) onEvent(ev)
+#                }
+#            } catch (e: Exception) {
+#            } finally {
+#                try { rec.stop() } catch (e: Exception) {}
+#                rec.release()
+#            }
+#        }, "jarvis-aplausos")
+#        thread?.start()
+#        return true
+#    }
+#
+#    fun stop() {
+#        running = false
+#        try { thread?.join(600) } catch (e: InterruptedException) {}
+#        thread = null
+#        level = 0f
+#    }
+#}
+#>>> android/app/src/main/java/app/jarvis/asistente/JarvisService.kt
+#package app.jarvis.asistente
+#
+#import android.app.Notification
+#import android.app.NotificationChannel
+#import android.app.NotificationManager
+#import android.app.PendingIntent
+#import android.app.Service
+#import android.content.Intent
+#import android.content.pm.ServiceInfo
+#import android.graphics.drawable.Icon
+#import android.media.AudioAttributes
+#import android.media.AudioFocusRequest
+#import android.media.AudioManager
+#import android.media.ToneGenerator
+#import android.os.Build
+#import android.os.Bundle
+#import android.os.Handler
+#import android.os.IBinder
+#import android.os.Looper
+#import android.os.PowerManager
+#import android.speech.RecognitionListener
+#import android.speech.RecognizerIntent
+#import android.speech.SpeechRecognizer
+#import java.util.Locale
+#import java.util.concurrent.Executors
+#import kotlin.math.ln
+#import kotlin.math.max
+#import kotlin.math.roundToInt
+#
+#/**
+# * El corazón de Jarvis: corre en segundo plano (aun con la pantalla apagada), escucha aplausos,
+# * oye tu pregunta, se la pasa a Claude y te contesta en voz alta.
+# */
+#class JarvisService : Service() {
+#    companion object {
+#        const val ACTION_START = "app.jarvis.START"
+#        const val ACTION_STOP = "app.jarvis.STOP"
+#        const val ACTION_TALK = "app.jarvis.TALK"
+#        const val ACTION_RELOAD = "app.jarvis.RELOAD"
+#        const val ACTION_CALIBRATE = "app.jarvis.CALIBRATE"
+#        private const val CHANNEL = "jarvis"
+#        private const val NOTIF_ID = 7
+#        @Volatile var running = false; private set
+#    }
+#
+#    private lateinit var store: Store
+#    private lateinit var speaker: Speaker
+#    private val main = Handler(Looper.getMainLooper())
+#    private val worker = Executors.newSingleThreadExecutor()
+#    private var clap: ClapListener? = null
+#    private var recognizer: SpeechRecognizer? = null
+#    private var cancel: Cancel? = null
+#    private var turn = 0
+#    private var active = false
+#    private var inForeground = false
+#    private var state = "off"
+#    private var cpuLock: PowerManager.WakeLock? = null
+#    private var screenLock: PowerManager.WakeLock? = null
+#    private var focus: AudioFocusRequest? = null
+#    private var calibrating = false
+#    private val calPeaks = ArrayList<Float>()
+#
+#    override fun onBind(intent: Intent?): IBinder? = null
+#
+#    override fun onCreate() {
+#        super.onCreate()
+#        store = Store(this)
+#        speaker = Speaker(this, store) { Bus.log(it) }
+#        val ch = NotificationChannel(CHANNEL, "Jarvis escuchando", NotificationManager.IMPORTANCE_LOW)
+#        ch.setShowBadge(false)
+#        getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+#    }
+#
+#    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+#        val action = intent?.action ?: ACTION_START
+#        if (action == ACTION_STOP) { stopAll(); return START_NOT_STICKY }
+#        if (!goForeground()) { stopSelf(); return START_NOT_STICKY }
+#        if (!active) {
+#            active = true; running = true
+#            acquireCpu()
+#            Bus.log("Jarvis activo")
+#            if (action != ACTION_TALK) standby()
+#        }
+#        when (action) {
+#            ACTION_TALK -> wake()
+#            ACTION_RELOAD -> if (state == "standby") standby()
+#            ACTION_CALIBRATE -> calibrate()
+#        }
+#        return START_STICKY
+#    }
+#
+#    // ---------------- Notificación ----------------
+#
+#    private fun goForeground(): Boolean {
+#        if (inForeground) return true
+#        return try {
+#            val n = notification("Iniciando...")
+#            if (Build.VERSION.SDK_INT >= 30) startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+#            else startForeground(NOTIF_ID, n)
+#            inForeground = true
+#            true
+#        } catch (e: Exception) {
+#            Bus.log("Android no dejó iniciar a Jarvis en segundo plano: ${e.message}. Ábrelo desde la app.")
+#            false
+#        }
+#    }
+#
+#    private fun notification(text: String): Notification {
+#        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+#        val open = PendingIntent.getActivity(this, 0,
+#            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), flags)
+#        val talk = PendingIntent.getService(this, 1, Intent(this, JarvisService::class.java).setAction(ACTION_TALK), flags)
+#        val stop = PendingIntent.getService(this, 2, Intent(this, JarvisService::class.java).setAction(ACTION_STOP), flags)
+#        return Notification.Builder(this, CHANNEL)
+#            .setSmallIcon(R.drawable.ic_stat)
+#            .setContentTitle("Jarvis")
+#            .setContentText(text)
+#            .setOngoing(true)
+#            .setOnlyAlertOnce(true)
+#            .setContentIntent(open)
+#            .setCategory(Notification.CATEGORY_SERVICE)
+#            .setVisibility(Notification.VISIBILITY_PUBLIC)
+#            .addAction(Notification.Action.Builder(null as Icon?, "Hablar", talk).build())
+#            .addAction(Notification.Action.Builder(null as Icon?, "Apagar", stop).build())
+#            .build()
+#    }
+#
+#    private fun setState(s: String, text: String) {
+#        state = s
+#        Bus.state(text)
+#        if (inForeground) getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(text))
+#    }
+#
+#    // ---------------- Espera: aplausos ----------------
+#
+#    private fun standby() {
+#        if (!active) return
+#        releaseScreen(); abandonFocus(); stopRecognizer()
+#        clap?.stop(); clap = null
+#        val mode = store.activacion
+#        if (mode == "aplauso2" || mode == "aplauso1") {
+#            val needed = if (mode == "aplauso1") 1 else 2
+#            val tok = turn
+#            val c = ClapListener(needed, store.sensibilidad) { ev -> main.post { onClap(tok, ev) } }
+#            if (c.start()) {
+#                clap = c
+#                setState("standby", if (needed == 2) "Aplaude dos veces para hablarme" else "Aplaude para hablarme")
+#            } else setState("standby", "No pude usar el micrófono. Toca «Hablar».")
+#        } else setState("standby", "Toca «Hablar» para preguntarme")
+#    }
+#
+#    private fun onClap(tok: Int, ev: ClapDetector.Event) {
+#        if (tok != turn || !active) return
+#        if (calibrating) {
+#            calPeaks.add(ev.peak)
+#            Bus.log("Aplauso ${calPeaks.size} de 3")
+#            if (calPeaks.size >= 3) finishCalibration()
+#            return
+#        }
+#        if (ev.kind == ClapDetector.Kind.TRIGGER) wake()
+#    }
+#
+#    private fun calibrate() {
+#        val c = clap
+#        if (c == null) { Bus.log("Para calibrar, activa el modo aplauso."); return }
+#        calibrating = true; calPeaks.clear()
+#        c.configure(needed = 99, sensitivity = 1f)
+#        Bus.log("Calibrando: aplaude 3 veces, como lo harías normalmente...")
+#        main.postDelayed({ if (calibrating) finishCalibration() }, 9000)
+#    }
+#
+#    private fun finishCalibration() {
+#        calibrating = false
+#        val needed = if (store.activacion == "aplauso1") 1 else 2
+#        if (calPeaks.size < 2) {
+#            clap?.configure(needed, store.sensibilidad)
+#            Bus.log("No detecté suficientes aplausos. Acércate al teléfono o sube la sensibilidad.")
+#            return
+#        }
+#        val med = calPeaks.sorted()[calPeaks.size / 2].toDouble()
+#        val thr = max(0.03, med * 0.5)
+#        val sens = (ln(thr / 0.5) / ln(0.16)).coerceIn(0.0, 1.0).toFloat()
+#        store.sensibilidad = sens
+#        clap?.configure(needed, sens)
+#        Bus.log("Listo: sensibilidad al ${(sens * 100).roundToInt()}%")
+#        Bus.changed()
+#    }
+#
+#    // ---------------- Plática ----------------
+#
+#    private fun wake() {
+#        if (!active || calibrating) return
+#        haltCurrent()
+#        val tok = ++turn
+#        acquireScreen()
+#        beep(false)
+#        setState("listening", "Te escucho...")
+#        main.postDelayed({ if (tok == turn) listen(tok, false) }, 350)
+#    }
+#
+#    private fun haltCurrent() {
+#        cancel?.cancel(); cancel = null
+#        speaker.stop()
+#        stopRecognizer()
+#        clap?.stop(); clap = null
+#    }
+#
+#    private fun listen(tok: Int, followup: Boolean) {
+#        if (tok != turn || !active) return
+#        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+#            Bus.log("Este teléfono no tiene reconocimiento de voz. Revisa que la app de Google esté instalada y activa.")
+#            standby(); return
+#        }
+#        stopRecognizer()
+#        setState("listening", if (followup) "Te escucho... (o quédate callado)" else "Te escucho...")
+#        val rec = try { SpeechRecognizer.createSpeechRecognizer(this) } catch (e: Exception) { null }
+#        if (rec == null) { standby(); return }
+#        recognizer = rec
+#        var done = false
+#        rec.setRecognitionListener(object : RecognitionListener {
+#            override fun onReadyForSpeech(params: Bundle?) {}
+#            override fun onBeginningOfSpeech() {}
+#            override fun onRmsChanged(rmsdB: Float) {}
+#            override fun onBufferReceived(buffer: ByteArray?) {}
+#            override fun onEndOfSpeech() {}
+#            override fun onEvent(eventType: Int, params: Bundle?) {}
+#            override fun onPartialResults(partialResults: Bundle?) {
+#                val t = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+#                if (!t.isNullOrBlank() && tok == turn) Bus.state("\"$t\"")
+#            }
+#            override fun onResults(results: Bundle?) {
+#                if (done) return
+#                done = true
+#                val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
+#                main.post {
+#                    stopRecognizer()
+#                    if (tok != turn) return@post
+#                    if (t.isEmpty()) afterSilence(followup) else handle(tok, t)
+#                }
+#            }
+#            override fun onError(error: Int) {
+#                if (done) return
+#                done = true
+#                main.post {
+#                    stopRecognizer()
+#                    if (tok != turn) return@post
+#                    if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) afterSilence(followup)
+#                    else { Bus.log("No pude escucharte: ${sttError(error)}"); standby() }
+#                }
+#            }
+#        })
+#        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+#            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+#            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
+#            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+#            .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+#            .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+#        try { rec.startListening(i) } catch (e: Exception) { Bus.log("No pude escuchar: ${e.message}"); standby(); return }
+#        main.postDelayed({
+#            if (tok == turn && recognizer === rec && !done) try { rec.stopListening() } catch (e: Exception) {}
+#        }, if (followup) 9000L else 15000L)
+#    }
+#
+#    private fun afterSilence(followup: Boolean) {
+#        if (!followup) beep(true)
+#        standby()
+#    }
+#
+#    private fun handle(tok: Int, raw: String) {
+#        val text = Brain.stripWake(raw)
+#        if (text.isBlank()) { standby(); return }
+#        Bus.log("Tú: $text")
+#        val local = Brain.localCommand(text, store)
+#        if (local != null) {
+#            say(tok, local.say) { if (!local.end && store.conversacion) listen(tok, true) else standby() }
+#            Bus.changed(); return
+#        }
+#        if (store.apiKey.isBlank()) { say(tok, "Primero pon tu clave de API en la app de Jarvis.") { standby() }; return }
+#        if (store.presupuesto > 0 && store.gastoTotal >= store.presupuesto) {
+#            say(tok, "Ya llegaste a tu presupuesto de ${store.presupuesto.toInt()} dólares. Si quieres seguir, súbelo en la app.") { standby() }
+#            return
+#        }
+#        val mk = Brain.route(text, store.modo)
+#        setState("thinking", "Pensando... (${Brain.MODELS[mk]!!.name})")
+#        val c = Cancel(); cancel = c
+#        speaker.applyVoice(); requestFocus()
+#        worker.execute {
+#            val res = Brain.ask(store, text, mk, c, object : Brain.Sink {
+#                override fun onFirstText() { main.post { if (tok == turn) setState("speaking", "Hablando... (toca «Hablar» para interrumpir)") } }
+#                override fun onSentence(s: String) { if (!c.cancelled) speaker.speak(s) }
+#                override fun onMemory(dato: String) { Bus.log("Guardé en mi memoria: $dato") }
+#            })
+#            if (res.error != null && !c.cancelled) speaker.speak(res.error)
+#            if (!c.cancelled) speaker.waitDone(c)
+#            main.post {
+#                if (tok != turn) return@post
+#                if (res.ok) Bus.log("Jarvis (${Brain.MODELS[res.model]!!.name}, ${usd(res.cost)}): ${res.text}")
+#                else if (res.error != null) Bus.log("Error: ${res.error}")
+#                Bus.changed()
+#                if (res.ok && store.conversacion) main.postDelayed({ if (tok == turn) listen(tok, true) }, 300)
+#                else standby()
+#            }
+#        }
+#    }
+#
+#    private fun say(tok: Int, text: String, then: () -> Unit) {
+#        Bus.log("Jarvis: $text")
+#        setState("speaking", "Hablando...")
+#        speaker.applyVoice(); requestFocus()
+#        worker.execute {
+#            speaker.speak(text)
+#            speaker.waitDone(null)
+#            main.post { if (tok == turn) then() }
+#        }
+#    }
+#
+#    private fun stopRecognizer() {
+#        val r = recognizer ?: return
+#        recognizer = null
+#        try { r.cancel() } catch (e: Exception) {}
+#        try { r.destroy() } catch (e: Exception) {}
+#    }
+#
+#    private fun sttError(code: Int) = when (code) {
+#        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "no hay internet"
+#        SpeechRecognizer.ERROR_AUDIO -> "problema con el micrófono"
+#        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "falta el permiso del micrófono"
+#        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "el reconocedor está ocupado"
+#        SpeechRecognizer.ERROR_SERVER -> "error del servidor de voz"
+#        SpeechRecognizer.ERROR_CLIENT -> "error del reconocedor"
+#        else -> "código $code"
+#    }
+#
+#    private fun usd(c: Double) = if (c < 0.0001) "menos de 0.0001 USD" else String.format(Locale.US, "%.4f USD", c)
+#
+#    // ---------------- Sonido, pantalla y energía ----------------
+#
+#    private fun beep(low: Boolean) {
+#        try {
+#            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 60)
+#            tg.startTone(if (low) ToneGenerator.TONE_PROP_NACK else ToneGenerator.TONE_PROP_ACK, 180)
+#            main.postDelayed({ tg.release() }, 500)
+#        } catch (e: Exception) {}
+#    }
+#
+#    private fun acquireCpu() {
+#        if (cpuLock != null) return
+#        cpuLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "jarvis:cpu").apply {
+#            setReferenceCounted(false); acquire()
+#        }
+#    }
+#
+#    @Suppress("DEPRECATION")
+#    private fun acquireScreen() {
+#        if (!store.pantalla) return
+#        try {
+#            if (screenLock == null) screenLock = getSystemService(PowerManager::class.java).newWakeLock(
+#                PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+#                "jarvis:pantalla").apply { setReferenceCounted(false) }
+#            screenLock?.acquire(90_000)
+#        } catch (e: Exception) {}
+#    }
+#
+#    private fun releaseScreen() { try { if (screenLock?.isHeld == true) screenLock?.release() } catch (e: Exception) {} }
+#
+#    private fun requestFocus() {
+#        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+#            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT)
+#                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()).build()
+#        try { getSystemService(AudioManager::class.java).requestAudioFocus(req); focus = req } catch (e: Exception) {}
+#    }
+#
+#    private fun abandonFocus() {
+#        val f = focus ?: return
+#        focus = null
+#        try { getSystemService(AudioManager::class.java).abandonAudioFocusRequest(f) } catch (e: Exception) {}
+#    }
+#
+#    private fun stopAll() {
+#        active = false; running = false; turn++
+#        if (::speaker.isInitialized) haltCurrent()
+#        releaseScreen(); abandonFocus()
+#        try { cpuLock?.release() } catch (e: Exception) {}
+#        cpuLock = null
+#        Bus.state("Jarvis apagado"); Bus.log("Jarvis apagado")
+#        if (inForeground) { stopForeground(STOP_FOREGROUND_REMOVE); inForeground = false }
+#        stopSelf()
+#    }
+#
+#    override fun onDestroy() {
+#        active = false; running = false; turn++
+#        haltCurrent()
+#        speaker.shutdown()
+#        worker.shutdownNow()
+#        try { cpuLock?.release() } catch (e: Exception) {}
+#        releaseScreen()
+#        Bus.changed()
+#        super.onDestroy()
+#    }
+#}
+#>>> android/app/src/main/java/app/jarvis/asistente/MainActivity.kt
+#package app.jarvis.asistente
+#
+#import android.Manifest
+#import android.app.Activity
+#import android.content.Intent
+#import android.content.pm.PackageManager
+#import android.content.res.ColorStateList
+#import android.graphics.Typeface
+#import android.graphics.drawable.ColorDrawable
+#import android.graphics.drawable.GradientDrawable
+#import android.net.Uri
+#import android.os.Build
+#import android.os.Bundle
+#import android.os.PowerManager
+#import android.provider.Settings
+#import android.speech.tts.Voice
+#import android.text.Editable
+#import android.text.InputType
+#import android.text.TextWatcher
+#import android.view.Gravity
+#import android.view.View
+#import android.view.ViewGroup
+#import android.widget.AdapterView
+#import android.widget.ArrayAdapter
+#import android.widget.Button
+#import android.widget.CheckBox
+#import android.widget.EditText
+#import android.widget.LinearLayout
+#import android.widget.ScrollView
+#import android.widget.SeekBar
+#import android.widget.Spinner
+#import android.widget.TextView
+#import android.widget.Toast
+#import org.json.JSONObject
+#import java.util.Locale
+#import kotlin.math.roundToInt
+#
+#private val BG = 0xFF05070D.toInt()
+#private val PANEL = 0xFF0E1522.toInt()
+#private val LINE = 0xFF22304A.toInt()
+#private val FG = 0xFFE6EDF6.toInt()
+#private val MUT = 0xFF8FA0B6.toInt()
+#private val ACC = 0xFF38D6FF.toInt()
+#
+#/** Pantalla de ajustes: encender Jarvis, clave, cerebro, aplauso, voz, memoria y gasto. */
+#class MainActivity : Activity() {
+#    private lateinit var store: Store
+#    private lateinit var col: LinearLayout
+#    private lateinit var stateView: TextView
+#    private lateinit var toggleBtn: Button
+#    private lateinit var logView: TextView
+#    private lateinit var gastoView: TextView
+#    private lateinit var datosView: TextView
+#    private lateinit var sensBar: SeekBar
+#    private lateinit var sensLabel: TextView
+#    private lateinit var voiceSpinner: Spinner
+#    private lateinit var perfilEdit: EditText
+#    private var preview: Speaker? = null
+#    private var voices: List<Voice> = emptyList()
+#
+#    private val modos = listOf("auto", "haiku", "sonnet", "opus", "fable")
+#    private val modosTxt = listOf("Automático (elige según la pregunta)", "Rápido · Haiku 5.5", "Normal · Sonnet 5.5", "Potente · Opus 5.5", "Máximo · Fable 5.1")
+#    private val acts = listOf("aplauso2", "aplauso1", "boton")
+#    private val actsTxt = listOf("Doble aplauso", "Un aplauso", "Solo botón (sin micrófono en espera)")
+#
+#    override fun onCreate(savedInstanceState: Bundle?) {
+#        super.onCreate(savedInstanceState)
+#        store = Store(this)
+#        window.statusBarColor = BG
+#        window.navigationBarColor = BG
+#        val scroll = ScrollView(this).apply { setBackgroundColor(BG); fitsSystemWindows = true }
+#        col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(18), dp(18), dp(48)) }
+#        scroll.addView(col)
+#        setContentView(scroll)
+#        buildUi()
+#        askPermissions()
+#        preview = Speaker(this, store) { msg -> runOnUiThread { toast(msg) } }.also { sp ->
+#            sp.onReady = { runOnUiThread { fillVoices() } }
+#        }
+#    }
+#
+#    override fun onResume() {
+#        super.onResume()
+#        Bus.listener = { runOnUiThread { refresh() } }
+#        refresh()
+#    }
+#
+#    override fun onPause() { super.onPause(); Bus.listener = null }
+#
+#    override fun onDestroy() { preview?.shutdown(); super.onDestroy() }
+#
+#    // ---------------- Construcción de la pantalla ----------------
+#
+#    private fun buildUi() {
+#        col.addView(text("J A R V I S", 26f, ACC, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(2)) })
+#        stateView = text("", 16f, FG).apply { gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(10)) }
+#        col.addView(stateView)
+#        toggleBtn = button("Activar Jarvis", primary = true) { toggle() }
+#        button("Hablar ahora") { svc(JarvisService.ACTION_TALK) }
+#        note("Con Jarvis activo puedes salir de la app o apagar la pantalla: sigue escuchando tus aplausos. En la notificación tienes «Hablar» y «Apagar».")
+#
+#        section("Clave de API")
+#        edit("sk-ant-...", store.apiKey, password = true) { store.apiKey = it }
+#        note("Créala en console.anthropic.com y pégala aquí. Se guarda solo en este teléfono. Pon un límite de gasto en la consola.")
+#
+#        section("Cerebro")
+#        spinner(modosTxt, modos.indexOf(store.modo)) { store.modo = modos[it] }
+#        note("Automático: plática corta → Haiku, explicaciones → Sonnet, «analiza / a fondo / estrategia / redacta» → Opus. Por voz: «modo rápido», «modo potente», «modo máximo», «modo automático».")
+#
+#        section("Activación")
+#        spinner(actsTxt, acts.indexOf(store.activacion)) {
+#            if (store.activacion != acts[it]) { store.activacion = acts[it]; svc(JarvisService.ACTION_RELOAD) }
+#        }
+#        sensLabel = text("", 14f, FG)
+#        col.addView(sensLabel)
+#        sensBar = seek(100, (store.sensibilidad * 100).roundToInt()) { p ->
+#            store.sensibilidad = p / 100f; sensLabel.text = "Sensibilidad del aplauso: $p%"
+#        }
+#        sensBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+#            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+#                if (fromUser) { store.sensibilidad = p / 100f; sensLabel.text = "Sensibilidad del aplauso: $p%" }
+#            }
+#            override fun onStartTrackingTouch(sb: SeekBar?) {}
+#            override fun onStopTrackingTouch(sb: SeekBar?) { svc(JarvisService.ACTION_RELOAD) }
+#        })
+#        button("Calibrar: aplaude 3 veces") { svc(JarvisService.ACTION_CALIBRATE) }
+#        note("Si no te hace caso o se activa sola, calibra con Jarvis activo y el teléfono donde lo vas a dejar.")
+#
+#        section("Voz")
+#        voiceSpinner = spinner(listOf("Cargando voces..."), 0) { pos ->
+#            val v = voices.getOrNull(pos) ?: return@spinner
+#            if (store.voz != v.name) { store.voz = v.name; preview?.applyVoice() }
+#        }
+#        note("Las voces que dicen «en línea» suenan más naturales. Si ves pocas, instala más en Ajustes de Android → Texto a voz → Google → Instalar datos de voz → Español.")
+#        val velLabel = text("Velocidad: ${"%.2f".format(Locale.US, store.velocidad)}×", 14f, FG); col.addView(velLabel)
+#        seek(100, ((store.velocidad - 0.6f) / 1.0f * 100).roundToInt()) { p ->
+#            store.velocidad = 0.6f + p / 100f; velLabel.text = "Velocidad: ${"%.2f".format(Locale.US, store.velocidad)}×"
+#        }
+#        val tonoLabel = text("Tono: ${"%.2f".format(Locale.US, store.tono)}", 14f, FG); col.addView(tonoLabel)
+#        seek(100, ((store.tono - 0.6f) / 0.8f * 100).roundToInt()) { p ->
+#            store.tono = 0.6f + p * 0.8f / 100f; tonoLabel.text = "Tono: ${"%.2f".format(Locale.US, store.tono)}"
+#        }
+#        button("Probar voz") { probarVoz() }
+#
+#        section("Voz premium (opcional)")
+#        check("Usar voz premium de ElevenLabs", store.premium) { store.premium = it }
+#        edit("Clave de ElevenLabs", store.elevenKey, password = true) { store.elevenKey = it }
+#        edit("ID de voz (vacío = George)", if (store.elevenVoz == Store.DEFAULT_ELEVEN_VOICE) "" else store.elevenVoz) { store.elevenVoz = it }
+#        note("Mucho más natural, tipo Jarvis. Crea una cuenta gratis en elevenlabs.io (incluye unos 10 mil caracteres al mes), copia tu clave y, si quieres, el ID de una voz de su biblioteca, por ejemplo una voz mexicana. Si se acaba el saldo, Jarvis vuelve solo a la voz del teléfono.")
+#
+#        section("Conversación")
+#        check("Seguir escuchando después de responder", store.conversacion) { store.conversacion = it }
+#        check("Encender la pantalla mientras platicamos", store.pantalla) { store.pantalla = it }
+#        check("Búsqueda web (≈1 centavo de dólar por búsqueda)", store.busqueda) { store.busqueda = it }
+#        edit("Tu ciudad (para clima y noticias), opcional", store.ciudad) { store.ciudad = it }
+#
+#        section("Memoria")
+#        note("Perfil: lo que Jarvis sabe de ti. Importa tu archivo memoria-jarvis.md o escríbelo aquí.")
+#        perfilEdit = edit("Me llamo..., vivo en..., me gusta...", store.perfil, multiline = true) { store.perfil = it }
+#        button("Importar archivo de memoria") { importFile() }
+#        datosView = text("", 13f, FG); col.addView(datosView)
+#        button("Borrar lo que aprendió") { store.clearDatos(); refresh() }
+#        button("Borrar la conversación") { store.clearHistory(); toast("Conversación borrada") }
+#
+#        section("Gasto de la API")
+#        gastoView = text("", 14f, FG); col.addView(gastoView)
+#        edit("Presupuesto en USD", store.presupuesto.toString(), number = true) { store.presupuesto = it.toFloatOrNull() ?: 2f }
+#        button("Reiniciar contador") { store.resetGasto(); refresh() }
+#        note("Es un estimado con precios de lista. El saldo real está en la consola de Anthropic.")
+#
+#        section("Que no lo apague Android")
+#        button("Permitir que funcione en segundo plano") { batteryExemption() }
+#        note("Android a veces cierra apps que escuchan todo el tiempo. Esto le pide que deje a Jarvis en paz. Escuchar aplausos gasta batería: lo ideal es dejar el teléfono cargando.")
+#
+#        section("Registro")
+#        logView = text("", 12.5f, MUT).apply { setTextIsSelectable(true) }
+#        col.addView(logView)
+#    }
+#
+#    private fun refresh() {
+#        stateView.text = if (JarvisService.running) Bus.stateText else "Jarvis apagado"
+#        toggleBtn.text = if (JarvisService.running) "Apagar Jarvis" else "Activar Jarvis"
+#        sensBar.progress = (store.sensibilidad * 100).roundToInt()
+#        sensLabel.text = "Sensibilidad del aplauso: ${sensBar.progress}%"
+#        val pm = store.gastoPorModelo()
+#        val per = pm.keys().asSequence().joinToString("  ·  ") { k -> "${Brain.MODELS[k]?.name ?: k}: ${String.format(Locale.US, "%.4f", pm.optDouble(k))}" }
+#        gastoView.text = String.format(Locale.US, "Total: %.4f de %.2f USD · %d llamadas", store.gastoTotal, store.presupuesto, store.llamadas) +
+#            (if (per.isNotEmpty()) "\n$per" else "")
+#        val d = store.datos()
+#        datosView.text = if (d.length() == 0) "Datos que aprendió: (todavía nada)" else
+#            "Datos que aprendió:\n" + (0 until d.length()).joinToString("\n") { "• " + d.getJSONObject(it).optString("t") }
+#        logView.text = Bus.text().ifEmpty { "Aquí verás lo que escucha y responde Jarvis." }
+#    }
+#
+#    // ---------------- Acciones ----------------
+#
+#    private fun toggle() {
+#        if (JarvisService.running) svc(JarvisService.ACTION_STOP)
+#        else {
+#            if (!hasMic()) { askPermissions(); toast("Primero permite el micrófono"); return }
+#            svc(JarvisService.ACTION_START)
+#        }
+#        toggleBtn.postDelayed({ refresh() }, 600)
+#    }
+#
+#    private fun svc(action: String) {
+#        val i = Intent(this, JarvisService::class.java).setAction(action)
+#        try {
+#            when (action) {
+#                JarvisService.ACTION_START -> startForegroundService(i)
+#                JarvisService.ACTION_TALK -> {
+#                    if (!hasMic()) { askPermissions(); return }
+#                    if (JarvisService.running) startService(i) else startForegroundService(i)
+#                }
+#                else -> if (JarvisService.running) startService(i)
+#            }
+#        } catch (e: Exception) { toast("No pude hablar con Jarvis: ${e.message}") }
+#    }
+#
+#    private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+#
+#    private fun askPermissions() {
+#        val need = ArrayList<String>()
+#        if (!hasMic()) need.add(Manifest.permission.RECORD_AUDIO)
+#        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+#            need.add(Manifest.permission.POST_NOTIFICATIONS)
+#        if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
+#    }
+#
+#    private fun batteryExemption() {
+#        val pm = getSystemService(PowerManager::class.java)
+#        if (pm.isIgnoringBatteryOptimizations(packageName)) { toast("Listo, ya está permitido"); return }
+#        try {
+#            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+#        } catch (e: Exception) {
+#            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+#        }
+#    }
+#
+#    private fun fillVoices() {
+#        voices = preview?.spanishVoices() ?: emptyList()
+#        val labels = voices.map { v ->
+#            val region = v.locale.displayCountry.ifBlank { v.locale.toLanguageTag() }
+#            v.name + "  ·  " + region + (if (v.isNetworkConnectionRequired) "  ·  en línea" else "")
+#        }
+#        voiceSpinner.adapter = adapter(labels.ifEmpty { listOf("(no encontré voces en español)") })
+#        val idx = voices.indexOfFirst { it.name == store.voz }
+#        voiceSpinner.setSelection(if (idx >= 0) idx else 0)
+#    }
+#
+#    private fun probarVoz() {
+#        val sp = preview ?: return
+#        sp.stop(); sp.applyVoice()
+#        Thread { sp.speak("Hola, soy Jarvis. ¿Qué hacemos hoy?") }.start()
+#    }
+#
+#    private fun importFile() {
+#        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+#        @Suppress("DEPRECATION")
+#        startActivityForResult(i, 42)
+#    }
+#
+#    @Deprecated("Deprecated in Java")
+#    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+#        @Suppress("DEPRECATION")
+#        super.onActivityResult(requestCode, resultCode, data)
+#        if (requestCode != 42 || resultCode != RESULT_OK) return
+#        val uri = data?.data ?: return
+#        try {
+#            val txt = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+#            val t = txt.trim()
+#            if (t.startsWith("{")) {
+#                val j = JSONObject(t)
+#                if (j.has("perfil")) store.perfil = j.optString("perfil")
+#                j.optJSONArray("datos")?.let { arr ->
+#                    for (k in 0 until arr.length()) arr.optJSONObject(k)?.optString("t")?.takeIf { it.isNotBlank() }?.let { store.addDato(it) }
+#                }
+#            } else store.perfil = txt
+#            perfilEdit.setText(store.perfil)
+#            refresh(); toast("Memoria importada")
+#        } catch (e: Exception) { toast("No pude leer ese archivo") }
+#    }
+#
+#    // ---------------- Piezas de interfaz ----------------
+#
+#    private fun dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
+#
+#    private fun box(fill: Int = PANEL) = GradientDrawable().apply {
+#        setColor(fill); cornerRadius = dp(12).toFloat(); setStroke(dp(1), LINE)
+#    }
+#
+#    private fun lp(top: Int = 6) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+#        .apply { topMargin = dp(top) }
+#
+#    private fun text(s: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
+#        text = s; textSize = size; setTextColor(color)
+#        if (bold) setTypeface(typeface, Typeface.BOLD)
+#        setPadding(0, dp(3), 0, dp(3))
+#    }
+#
+#    private fun section(title: String) {
+#        col.addView(text(title.uppercase(), 13f, ACC, true).apply { letterSpacing = 0.08f; setPadding(0, dp(24), 0, dp(4)) })
+#    }
+#
+#    private fun note(s: String) { col.addView(text(s, 12.5f, MUT)) }
+#
+#    private fun button(label: String, primary: Boolean = false, onClick: () -> Unit): Button {
+#        val b = Button(this).apply {
+#            text = label; isAllCaps = false; textSize = 15f
+#            setTextColor(if (primary) BG else FG)
+#            background = box(if (primary) ACC else PANEL)
+#            setOnClickListener { onClick() }
+#        }
+#        col.addView(b, lp(8))
+#        return b
+#    }
+#
+#    private fun edit(hint: String, value: String, password: Boolean = false, multiline: Boolean = false,
+#                     number: Boolean = false, onChange: (String) -> Unit): EditText {
+#        val e = EditText(this).apply {
+#            this.hint = hint
+#            inputType = when {
+#                password -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+#                multiline -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+#                number -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+#                else -> InputType.TYPE_CLASS_TEXT
+#            }
+#            if (multiline) { minLines = 5; maxLines = 14; gravity = Gravity.TOP or Gravity.START }
+#            setText(value)
+#            setTextColor(FG); setHintTextColor(MUT); textSize = 15f
+#            background = box()
+#            setPadding(dp(12), dp(10), dp(12), dp(10))
+#            addTextChangedListener(object : TextWatcher {
+#                override fun afterTextChanged(s: Editable?) { onChange(s?.toString() ?: "") }
+#                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+#                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+#            })
+#        }
+#        col.addView(e, lp(6))
+#        return e
+#    }
+#
+#    private fun check(label: String, value: Boolean, onChange: (Boolean) -> Unit): CheckBox {
+#        val c = CheckBox(this).apply {
+#            text = label; isChecked = value; setTextColor(FG); textSize = 15f
+#            buttonTintList = ColorStateList.valueOf(ACC)
+#            setOnCheckedChangeListener { _, v -> onChange(v) }
+#        }
+#        col.addView(c, lp(2))
+#        return c
+#    }
+#
+#    private fun seek(max: Int, value: Int, onChange: (Int) -> Unit): SeekBar {
+#        val s = SeekBar(this).apply {
+#            this.max = max; progress = value
+#            progressTintList = ColorStateList.valueOf(ACC); thumbTintList = ColorStateList.valueOf(ACC)
+#            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+#                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) { if (fromUser) onChange(p) }
+#                override fun onStartTrackingTouch(sb: SeekBar?) {}
+#                override fun onStopTrackingTouch(sb: SeekBar?) {}
+#            })
+#        }
+#        col.addView(s, lp(2))
+#        return s
+#    }
+#
+#    private fun adapter(items: List<String>) = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
+#        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+#            (super.getView(position, convertView, parent) as TextView).apply { setTextColor(FG); textSize = 15f }
+#        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View =
+#            (super.getDropDownView(position, convertView, parent) as TextView).apply {
+#                setTextColor(FG); setBackgroundColor(PANEL); setPadding(dp(14), dp(12), dp(14), dp(12))
+#            }
+#    }.also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+#
+#    private fun spinner(items: List<String>, selected: Int, onSelect: (Int) -> Unit): Spinner {
+#        val sp = Spinner(this)
+#        sp.adapter = adapter(items)
+#        sp.setSelection(selected.coerceAtLeast(0))
+#        sp.background = box()
+#        sp.setPopupBackgroundDrawable(ColorDrawable(PANEL))
+#        sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+#            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { onSelect(position) }
+#            override fun onNothingSelected(parent: AdapterView<*>?) {}
+#        }
+#        col.addView(sp, lp(6))
+#        return sp
+#    }
+#
+#    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+#}
+#>>> android/app/src/main/java/app/jarvis/asistente/Store.kt
+#package app.jarvis.asistente
+#
+#import android.content.Context
+#import android.content.SharedPreferences
+#import org.json.JSONArray
+#import org.json.JSONObject
+#import java.text.SimpleDateFormat
+#import java.util.Date
+#import java.util.Locale
+#
+#/** Ajustes, memoria, historial y gasto. Todo vive solo en el teléfono. */
+#class Store(ctx: Context) : Mem {
+#    private val p: SharedPreferences = ctx.applicationContext.getSharedPreferences("jarvis", Context.MODE_PRIVATE)
+#
+#    private fun s(k: String, d: String) = p.getString(k, d) ?: d
+#    private fun put(k: String, v: String) = p.edit().putString(k, v).apply()
+#    private fun f(k: String, d: Float) = p.getFloat(k, d)
+#    private fun b(k: String, d: Boolean) = p.getBoolean(k, d)
+#    private fun dbl(k: String) = s(k, "0").toDoubleOrNull() ?: 0.0
+#
+#    override var apiKey: String get() = s("apiKey", ""); set(v) = put("apiKey", v.trim())
+#    override var modo: String get() = s("modo", "auto"); set(v) = put("modo", v)
+#    var activacion: String get() = s("activacion", "aplauso2"); set(v) = put("activacion", v)
+#    var sensibilidad: Float get() = f("sensibilidad", 0.5f); set(v) = p.edit().putFloat("sensibilidad", v).apply()
+#    var voz: String get() = s("voz", ""); set(v) = put("voz", v)
+#    var velocidad: Float get() = f("velocidad", 1.0f); set(v) = p.edit().putFloat("velocidad", v).apply()
+#    var tono: Float get() = f("tono", 1.0f); set(v) = p.edit().putFloat("tono", v).apply()
+#    var conversacion: Boolean get() = b("conversacion", true); set(v) = p.edit().putBoolean("conversacion", v).apply()
+#    var pantalla: Boolean get() = b("pantalla", true); set(v) = p.edit().putBoolean("pantalla", v).apply()
+#    override var busqueda: Boolean get() = b("busqueda", false); set(v) = p.edit().putBoolean("busqueda", v).apply()
+#    override var ciudad: String get() = s("ciudad", ""); set(v) = put("ciudad", v.trim())
+#    override var presupuesto: Float get() = f("presupuesto", 2f); set(v) = p.edit().putFloat("presupuesto", v).apply()
+#    var premium: Boolean get() = b("premium", false); set(v) = p.edit().putBoolean("premium", v).apply()
+#    var elevenKey: String get() = s("elevenKey", ""); set(v) = put("elevenKey", v.trim())
+#    var elevenVoz: String get() = s("elevenVoz", DEFAULT_ELEVEN_VOICE); set(v) = put("elevenVoz", v.trim().ifEmpty { DEFAULT_ELEVEN_VOICE })
+#    override var perfil: String get() = s("perfil", ""); set(v) = put("perfil", v)
+#
+#    // ---- Datos aprendidos ("Jarvis, acuérdate de que...") ----
+#    override fun datos(): JSONArray = try { JSONArray(s("datos", "[]")) } catch (e: Exception) { JSONArray() }
+#    override fun addDato(t: String) {
+#        val a = datos()
+#        a.put(JSONObject().put("t", t).put("f", SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date())))
+#        put("datos", a.toString())
+#    }
+#    fun clearDatos() = put("datos", "[]")
+#
+#    // ---- Historial de la plática (se reinicia tras 30 min sin hablar) ----
+#    override fun historyForApi(): JSONArray {
+#        val out = JSONArray()
+#        if (System.currentTimeMillis() - p.getLong("histTs", 0) > 30 * 60 * 1000L) return out
+#        val all = try { JSONArray(s("historial", "[]")) } catch (e: Exception) { JSONArray() }
+#        var start = maxOf(0, all.length() - 12)
+#        while (start < all.length() && all.getJSONObject(start).optString("role") != "user") start++
+#        for (i in start until all.length()) out.put(all.getJSONObject(i))
+#        return out
+#    }
+#    override fun pushHistory(u: String, a: String) {
+#        val prev = historyForApi()
+#        prev.put(JSONObject().put("role", "user").put("content", u))
+#        prev.put(JSONObject().put("role", "assistant").put("content", a.trim().ifEmpty { "..." }))
+#        val keep = JSONArray()
+#        for (i in maxOf(0, prev.length() - 24) until prev.length()) keep.put(prev.get(i))
+#        p.edit().putString("historial", keep.toString()).putLong("histTs", System.currentTimeMillis()).apply()
+#    }
+#    override fun clearHistory() = p.edit().putString("historial", "[]").putLong("histTs", 0).apply()
+#
+#    // ---- Gasto estimado de la API ----
+#    override val gastoTotal: Double get() = dbl("gastoTotal")
+#    val llamadas: Int get() = p.getInt("llamadas", 0)
+#    fun gastoPorModelo(): JSONObject = try { JSONObject(s("porModelo", "{}")) } catch (e: Exception) { JSONObject() }
+#    @Synchronized override fun addGasto(modelo: String, usd: Double) {
+#        val pm = gastoPorModelo()
+#        pm.put(modelo, pm.optDouble(modelo, 0.0) + usd)
+#        p.edit().putString("gastoTotal", (gastoTotal + usd).toString()).putInt("llamadas", llamadas + 1)
+#            .putString("porModelo", pm.toString()).apply()
+#    }
+#    fun resetGasto() = p.edit().putString("gastoTotal", "0").putInt("llamadas", 0).putString("porModelo", "{}").apply()
+#
+#    companion object {
+#        /** Voz premade "George" de ElevenLabs (cálida, habla español con el modelo multilingüe). */
+#        const val DEFAULT_ELEVEN_VOICE = "JBFqnCBsd6RMkjVDRZzb"
+#    }
+#}
+#>>> android/app/src/main/java/app/jarvis/asistente/Voice.kt
+#package app.jarvis.asistente
+#
+#import android.content.Context
+#import android.media.AudioAttributes
+#import android.media.MediaPlayer
+#import android.os.Bundle
+#import android.speech.tts.TextToSpeech
+#import android.speech.tts.UtteranceProgressListener
+#import android.speech.tts.Voice
+#import org.json.JSONObject
+#import java.io.File
+#import java.io.IOException
+#import java.net.HttpURLConnection
+#import java.net.URL
+#import java.util.Locale
+#import java.util.concurrent.CountDownLatch
+#import java.util.concurrent.Executors
+#import java.util.concurrent.Future
+#import java.util.concurrent.LinkedBlockingQueue
+#import java.util.concurrent.TimeUnit
+#import java.util.concurrent.atomic.AtomicInteger
+#
+#/**
+# * Voz de Jarvis.
+# * - Voz del sistema (gratis): voces de Google del teléfono, incluidas las "de red", que suenan más naturales.
+# * - Voz premium (opcional): ElevenLabs con tu propia clave.
+# */
+#class Speaker(ctx: Context, private val store: Store, private val onProblem: (String) -> Unit) {
+#    private val app = ctx.applicationContext
+#    private var tts: TextToSpeech? = null
+#    @Volatile var ready = false; private set
+#    private val pending = AtomicInteger(0)
+#    private val ids = AtomicInteger(0)
+#    @Volatile private var lastSpeak = 0L
+#    @Volatile private var premiumOffUntil = 0L
+#    private val eleven = ElevenQueue(app, store, { speakSystem(it) }) { msg ->
+#        premiumOffUntil = System.currentTimeMillis() + 10 * 60 * 1000L
+#        onProblem(msg)
+#    }
+#    var onReady: (() -> Unit)? = null
+#
+#    init {
+#        tts = TextToSpeech(app) { st ->
+#            if (st == TextToSpeech.SUCCESS) { ready = true; applyVoice(); onReady?.invoke() }
+#            else onProblem("No pude iniciar la voz del teléfono.")
+#        }
+#        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+#            override fun onStart(utteranceId: String?) {}
+#            override fun onDone(utteranceId: String?) { dec() }
+#            @Deprecated("Deprecated in Java")
+#            override fun onError(utteranceId: String?) { dec() }
+#        })
+#    }
+#
+#    private fun dec() { if (pending.decrementAndGet() < 0) pending.set(0) }
+#
+#    /** Voces en español del teléfono, primero México y EUA, primero las de mejor calidad. */
+#    fun spanishVoices(): List<Voice> {
+#        val all = try { tts?.voices?.toList() ?: emptyList() } catch (e: Exception) { emptyList() }
+#        return all.filter { it.locale.language == "es" && !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
+#            .sortedWith(compareByDescending<Voice> { regionScore(it) }.thenByDescending { it.quality }.thenBy { it.name })
+#    }
+#
+#    private fun regionScore(v: Voice) = when (v.locale.country) { "MX" -> 3; "US" -> 2; "419" -> 2; else -> 1 }
+#
+#    fun applyVoice() {
+#        val t = tts ?: return
+#        if (!ready) return
+#        val want = store.voz
+#        val v = spanishVoices().let { list -> list.firstOrNull { it.name == want } ?: list.firstOrNull() }
+#        try {
+#            if (v != null) t.setVoice(v) else t.setLanguage(Locale("es", "MX"))
+#        } catch (e: Exception) { }
+#        t.setSpeechRate(store.velocidad)
+#        t.setPitch(store.tono)
+#    }
+#
+#    fun speak(text: String) {
+#        val s = Brain.cleanForSpeech(text)
+#        if (s.isBlank()) return
+#        lastSpeak = System.currentTimeMillis()
+#        if (store.premium && store.elevenKey.isNotBlank() && System.currentTimeMillis() > premiumOffUntil) eleven.enqueue(s)
+#        else speakSystem(s)
+#    }
+#
+#    private fun speakSystem(s: String) {
+#        val t = tts ?: return
+#        var waited = 0
+#        while (!ready && waited < 3000) { try { Thread.sleep(100) } catch (e: InterruptedException) { return }; waited += 100 }
+#        pending.incrementAndGet()
+#        lastSpeak = System.currentTimeMillis()
+#        val r = t.speak(s, TextToSpeech.QUEUE_ADD, Bundle(), "j" + ids.incrementAndGet())
+#        if (r != TextToSpeech.SUCCESS) dec()
+#    }
+#
+#    fun busy(): Boolean = pending.get() > 0 || eleven.busy() || (tts?.isSpeaking == true) ||
+#        System.currentTimeMillis() - lastSpeak < 400
+#
+#    /** Espera a que termine de hablar (se llama desde un hilo de trabajo). */
+#    fun waitDone(cancel: Cancel?) {
+#        val t0 = System.currentTimeMillis(); var quiet = 0
+#        while (cancel?.cancelled != true && System.currentTimeMillis() - t0 < 180_000) {
+#            quiet = if (busy()) 0 else quiet + 1
+#            if (quiet >= 3) return
+#            try { Thread.sleep(150) } catch (e: InterruptedException) { return }
+#        }
+#    }
+#
+#    fun stop() { try { tts?.stop() } catch (e: Exception) {}; pending.set(0); eleven.cancel(); lastSpeak = 0 }
+#
+#    fun shutdown() { stop(); try { tts?.shutdown() } catch (e: Exception) {}; eleven.shutdown() }
+#}
+#
+#/** Cola de voz premium: pide el audio de la siguiente oración mientras suena la actual. */
+#class ElevenQueue(
+#    private val app: Context, private val store: Store,
+#    private val fallback: (String) -> Unit, private val onFail: (String) -> Unit
+#) {
+#    private class Item(val text: String, val audio: Future<ByteArray>, val gen: Int)
+#    private val fetcher = Executors.newFixedThreadPool(2)
+#    private val queue = LinkedBlockingQueue<Item>()
+#    private val count = AtomicInteger(0)
+#    @Volatile private var gen = 0
+#    @Volatile private var alive = true
+#    @Volatile private var player: MediaPlayer? = null
+#
+#    init {
+#        Thread({ loop() }, "jarvis-voz-premium").apply { isDaemon = true; start() }
+#    }
+#
+#    fun enqueue(text: String) {
+#        count.incrementAndGet()
+#        val key = store.elevenKey; val voice = store.elevenVoz
+#        queue.put(Item(text, fetcher.submit<ByteArray> { fetch(key, voice, text) }, gen))
+#    }
+#
+#    fun busy() = count.get() > 0
+#
+#    private fun loop() {
+#        while (alive) {
+#            val item = try { queue.take() } catch (e: InterruptedException) { return }
+#            try {
+#                if (item.gen != gen) continue
+#                val bytes = try { item.audio.get(30, TimeUnit.SECONDS) } catch (e: Exception) {
+#                    val cause = e.cause ?: e
+#                    onFail("La voz premium falló (${cause.message ?: "sin respuesta"}); uso la voz del teléfono.")
+#                    fallback(item.text)
+#                    continue
+#                }
+#                if (item.gen == gen) play(bytes, item.gen)
+#            } finally {
+#                if (count.decrementAndGet() < 0) count.set(0)
+#            }
+#        }
+#    }
+#
+#    private fun play(bytes: ByteArray, g: Int) {
+#        val f = File.createTempFile("jarvis", ".mp3", app.cacheDir)
+#        try {
+#            f.writeBytes(bytes)
+#            val done = CountDownLatch(1)
+#            val mp = MediaPlayer()
+#            player = mp
+#            mp.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT)
+#                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+#            mp.setDataSource(f.path)
+#            mp.setOnCompletionListener { done.countDown() }
+#            mp.setOnErrorListener { _, _, _ -> done.countDown(); true }
+#            mp.prepare(); mp.start()
+#            while (!done.await(100, TimeUnit.MILLISECONDS)) { if (g != gen || !alive) { try { mp.stop() } catch (e: Exception) {}; break } }
+#            mp.release(); player = null
+#        } catch (e: Exception) {
+#        } finally { f.delete() }
+#    }
+#
+#    private fun fetch(key: String, voice: String, text: String): ByteArray {
+#        val conn = URL("https://api.elevenlabs.io/v1/text-to-speech/$voice?output_format=mp3_44100_64").openConnection() as HttpURLConnection
+#        try {
+#            conn.requestMethod = "POST"; conn.doOutput = true
+#            conn.connectTimeout = 10000; conn.readTimeout = 30000
+#            conn.setRequestProperty("xi-api-key", key)
+#            conn.setRequestProperty("content-type", "application/json")
+#            conn.setRequestProperty("accept", "audio/mpeg")
+#            val body = JSONObject().put("text", text).put("model_id", "eleven_flash_v2_5")
+#                .put("voice_settings", JSONObject().put("stability", 0.45).put("similarity_boost", 0.8))
+#            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+#            val code = conn.responseCode
+#            if (code !in 200..299) {
+#                val err = try { conn.errorStream?.bufferedReader()?.readText() ?: "" } catch (e: Exception) { "" }
+#                throw IOException("error $code ${err.take(120)}")
+#            }
+#            return conn.inputStream.use { it.readBytes() }
+#        } finally { conn.disconnect() }
+#    }
+#
+#    fun cancel() {
+#        gen++
+#        val dropped = ArrayList<Item>(); queue.drainTo(dropped)
+#        dropped.forEach { it.audio.cancel(true) }
+#        if (count.addAndGet(-dropped.size) < 0) count.set(0)
+#        try { player?.stop() } catch (e: Exception) {}
+#    }
+#
+#    fun shutdown() { alive = false; cancel(); fetcher.shutdownNow() }
+#}
+#>>> android/app/src/main/res/drawable/ic_launcher_fg.xml
+#<?xml version="1.0" encoding="utf-8"?>
+#<vector xmlns:android="http://schemas.android.com/apk/res/android"
+#    android:width="108dp" android:height="108dp"
+#    android:viewportWidth="108" android:viewportHeight="108">
+#    <path android:strokeColor="#9938D6FF" android:strokeWidth="1.6"
+#        android:pathData="M28,54a26,26 0,1 0,52 0a26,26 0,1 0,-52 0" />
+#    <path android:strokeColor="#FF38D6FF" android:strokeWidth="2.6"
+#        android:pathData="M33,54a21,21 0,1 0,42 0a21,21 0,1 0,-42 0" />
+#    <path android:strokeColor="#888FF3FF" android:strokeWidth="1"
+#        android:pathData="M38,54a16,16 0,1 0,32 0a16,16 0,1 0,-32 0" />
+#    <path android:fillColor="#FF38D6FF"
+#        android:pathData="M44,54a10,10 0,1 0,20 0a10,10 0,1 0,-20 0" />
+#    <path android:fillColor="#FFEBFCFF"
+#        android:pathData="M49,54a5,5 0,1 0,10 0a5,5 0,1 0,-10 0" />
+#</vector>
+#>>> android/app/src/main/res/drawable/ic_stat.xml
+#<?xml version="1.0" encoding="utf-8"?>
+#<vector xmlns:android="http://schemas.android.com/apk/res/android"
+#    android:width="24dp" android:height="24dp"
+#    android:viewportWidth="24" android:viewportHeight="24">
+#    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+#        android:pathData="M3,12a9,9 0,1 0,18 0a9,9 0,1 0,-18 0" />
+#    <path android:fillColor="#FFFFFFFF"
+#        android:pathData="M8,12a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+#</vector>
+#>>> android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+#<?xml version="1.0" encoding="utf-8"?>
+#<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+#    <background android:drawable="@color/ic_bg" />
+#    <foreground android:drawable="@drawable/ic_launcher_fg" />
+#</adaptive-icon>
+#>>> android/app/src/main/res/values/colors.xml
+#<?xml version="1.0" encoding="utf-8"?>
+#<resources>
+#    <color name="ic_bg">#05070D</color>
+#</resources>
